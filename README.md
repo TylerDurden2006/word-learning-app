@@ -61,6 +61,25 @@ CONVEX_URL=https://your-deployment.convex.cloud npm run migrate:convex
 
 Use the `.convex.cloud` URL for the migration script because it calls Convex functions through `ConvexHttpClient`; use the `.convex.site` URL for browser REST traffic because the app talks to HTTP actions.
 
+## Tests
+
+```bash
+npm test
+```
+
+The default test command runs the core Node tests and isolated Convex database/API tests. Provider API keys are mocked or treated as absent by default, so the suite does not require OpenAI, Anthropic, or custom provider credentials.
+
+To run the opt-in live Convex database smoke test:
+
+```bash
+WORDFORGE_LIVE_CONVEX_TESTS=1 \
+CONVEX_URL=https://your-deployment.convex.cloud \
+CONVEX_HTTP_URL=https://your-deployment.convex.site \
+npm run test:convex
+```
+
+The live test creates a uniquely named test word, reviews it, checks the HTTP bootstrap payload, and deletes the test word before finishing.
+
 ## AI Provider Setup
 
 In the Settings screen, you can choose among:

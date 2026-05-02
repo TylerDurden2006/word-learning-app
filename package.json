@@ -10,12 +10,18 @@
     "convex:dev": "convex dev",
     "convex:codegen": "convex codegen",
     "migrate:convex": "node scripts/migrate-json-to-convex.mjs",
-    "test": "node core.test.js"
+    "test:core": "node core.test.js",
+    "test:convex": "vitest run",
+    "test": "npm run test:core && npm run test:convex"
   },
   "dependencies": {
     "convex": "^1.37.0"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "@edge-runtime/vm": "^5.0.0",
+    "@types/node": "^25.6.0",
+    "convex-test": "^0.0.51",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
   }
 }
