@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { ConvexHttpClient } from 'convex/browser';
+import { makeFunctionReference } from 'convex/server';
 
 const require = createRequire(import.meta.url);
 const shared = require('../shared.js');
-const { api } = require('../convex/_generated/api.js');
 const { buildConvexSnapshot } = require('./convex-migration-utils.cjs');
 
 const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || process.env.VITE_CONVEX_URL;
@@ -20,6 +20,6 @@ const dbPath = process.argv[2]
 const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
 const snapshot = buildConvexSnapshot(raw, shared);
 const client = new ConvexHttpClient(convexUrl);
-const result = await client.mutation(api.data.importSnapshot, snapshot);
+const result = await client.mutation(makeFunctionReference('data:importSnapshot'), snapshot);
 
 console.log(JSON.stringify({ dbPath, imported: result }, null, 2));

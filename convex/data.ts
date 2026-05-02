@@ -59,7 +59,7 @@ async function allWords(ctx: any) {
 }
 
 async function wordById(ctx: any, id: string) {
-  return await ctx.db.query("words").withIndex("by_id", (q: any) => q.eq("id", id)).unique();
+  return await ctx.db.query("words").withIndex("by_legacy_id", (q: any) => q.eq("id", id)).unique();
 }
 
 function buildStatsFrom(words: any[], reviewEvents: any[], now = new Date()) {

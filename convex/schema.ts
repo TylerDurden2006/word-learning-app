@@ -62,7 +62,7 @@ export default defineSchema({
   }).index("by_key", ["key"]),
 
   words: defineTable(wordFields)
-    .index("by_id", ["id"])
+    .index("by_legacy_id", ["id"])
     .index("by_term_normalized", ["term_normalized"])
     .index("by_updated_at", ["updated_at"])
     .index("by_created_at", ["created_at"])

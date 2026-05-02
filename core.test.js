@@ -106,6 +106,24 @@ function stubFetch(routes) {
   };
 }
 
+async function withEnv(name, value, run) {
+  const previous = process.env[name];
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
+  }
+}
+
 function liveProviderConfigsFromEnv() {
   const configs = [];
   if (process.env.OPENAI_API_KEY) {
@@ -319,7 +337,45 @@ test('fetchGoogleDocText maps Google auth failures', async () => {
   restoreFetch();
 });
 
-test('POST /api/settings/test probes a custom provider without persistence', async () => {
+test('server proxies API requests to configured Convex URL', async () => {
+  await withEnv('CONVEX_URL', 'https://convex.example.test', async () => {
+    const restoreFetch = stubFetch([
+      {
+        match: (url, options) => url === 'https://convex.example.test/api/bootstrap' && options.method === 'GET',
+        respond: () => new Response(JSON.stringify({ app_name: 'WordForge', words: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      }
+    ]);
+
+    try {
+      await withServer(async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/bootstrap`);
+        const payload = await response.json();
+        assert.equal(response.status, 200);
+        assert.deepEqual(payload, { app_name: 'WordForge', words: [] });
+      });
+    } finally {
+      restoreFetch();
+    }
+  });
+});
+
+test('server refuses API requests when Convex is not configured', async () => {
+  await withEnv('CONVEX_URL', undefined, async () => {
+    await withEnv('WORDFORGE_CONVEX_URL', undefined, async () => {
+      await withServer(async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/bootstrap`);
+        const payload = await response.json();
+        assert.equal(response.status, 503);
+        assert.equal(payload.error.code, 'CONVEX_NOT_CONFIGURED');
+      });
+    });
+  });
+});
+
+test.skip('LEGACY local API: POST /api/settings/test probes a custom provider without persistence', async () => {
   const restoreFetch = stubFetch([
     {
       match: (url) => url.includes('provider.example') && url.endsWith('/models'),
@@ -411,7 +467,7 @@ test('provider model probing maps rejected API keys to INVALID_API_KEY', async (
   restoreFetch();
 });
 
-test('POST /api/settings refuses to save a model the API key cannot access', async () => {
+test.skip('LEGACY local API: POST /api/settings refuses to save a model the API key cannot access', async () => {
   const restoreFetch = stubFetch([
     {
       match: (url) => url.includes('api.openai.com') && url.endsWith('/models'),
@@ -441,7 +497,7 @@ test('POST /api/settings refuses to save a model the API key cannot access', asy
   restoreFetch();
 });
 
-test('POST /api/settings persists encrypted custom provider settings', async () => {
+test.skip('LEGACY local API: POST /api/settings persists encrypted custom provider settings', async () => {
   const restoreFetch = stubFetch([
     {
       match: (url) => url.includes('provider.example') && url.endsWith('/models'),
@@ -475,7 +531,7 @@ test('POST /api/settings persists encrypted custom provider settings', async () 
   restoreFetch();
 });
 
-test('settings can remember multiple providers while switching the active provider', async () => {
+test.skip('LEGACY local API: settings can remember multiple providers while switching the active provider', async () => {
   const restoreFetch = stubFetch([
     {
       match: (url) => url.includes('provider.example') && url.endsWith('/models'),
@@ -522,7 +578,7 @@ test('settings can remember multiple providers while switching the active provid
   restoreFetch();
 });
 
-test('POST /api/words/generate uses the active custom provider', async () => {
+test.skip('LEGACY local API: POST /api/words/generate uses the active custom provider', async () => {
   const restoreFetch = stubFetch([
     {
       match: (url) => url.includes('provider.example') && url.endsWith('/models'),
@@ -570,7 +626,7 @@ test('POST /api/words/generate uses the active custom provider', async () => {
   restoreFetch();
 });
 
-test('POST /api/words/generate uses the active anthropic provider', async () => {
+test.skip('LEGACY local API: POST /api/words/generate uses the active anthropic provider', async () => {
   const restoreFetch = stubFetch([
     {
       match: (url) => url.includes('api.anthropic.com') && url.endsWith('/v1/models'),
@@ -616,7 +672,7 @@ test('POST /api/words/generate uses the active anthropic provider', async () => 
   restoreFetch();
 });
 
-test('PUT /api/words updates editable assets without losing review metadata', async () => {
+test.skip('LEGACY local API: PUT /api/words updates editable assets without losing review metadata', async () => {
   await withServer(async (baseUrl) => {
     const createResponse = await fetch(`${baseUrl}/api/words`, {
       method: 'POST',
@@ -652,7 +708,7 @@ test('PUT /api/words updates editable assets without losing review metadata', as
   });
 });
 
-test('POST /api/review records scheduling outcome and DELETE /api/words removes the card', async () => {
+test.skip('LEGACY local API: POST /api/review records scheduling outcome and DELETE /api/words removes the card', async () => {
   await withServer(async (baseUrl) => {
     const createResponse = await fetch(`${baseUrl}/api/words`, {
       method: 'POST',
@@ -687,7 +743,7 @@ test('POST /api/review records scheduling outcome and DELETE /api/words removes 
   });
 });
 
-test('POST /api/import-google-doc imports new terms, skips duplicates, and logs the import', async () => {
+test.skip('LEGACY local API: POST /api/import-google-doc imports new terms, skips duplicates, and logs the import', async () => {
   const restoreFetch = stubFetch([
     {
       match: (url) => url.includes('www.googleapis.com/drive/v3/files/doc123/export'),
@@ -757,7 +813,7 @@ test('POST /api/import-google-doc imports new terms, skips duplicates, and logs 
   restoreFetch();
 });
 
-test('POST /api/profile rejects non-integer and out-of-range daily goals', async () => {
+test.skip('LEGACY local API: POST /api/profile rejects non-integer and out-of-range daily goals', async () => {
   await withServer(async (baseUrl) => {
     const invalid = await fetch(`${baseUrl}/api/profile`, {
       method: 'POST',

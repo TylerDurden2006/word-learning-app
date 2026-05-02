@@ -45,13 +45,21 @@ npx convex env set APP_MASTER_KEY "your-long-random-secret"
 npx convex env set GOOGLE_OAUTH_CLIENT_ID "your_google_oauth_web_client_id"
 ```
 
-To point the browser at a deployed Convex HTTP API, set `window.WORDFORGE_CONFIG.apiBaseUrl` before `/app.js` loads or fill the `wordforge-api-base` meta tag in `public/index.html` with the Convex site URL.
+To run the app against Convex only, point the Node server at the Convex HTTP Actions site URL:
+
+```bash
+CONVEX_HTTP_URL=https://your-deployment.convex.site npm start
+```
+
+`server.js` proxies every `/api/...` request to Convex and does not fall back to the local JSON datastore. If you serve `public/` without `server.js`, set `window.WORDFORGE_CONFIG.apiBaseUrl` before `/app.js` loads or fill the `wordforge-api-base` meta tag in `public/index.html` with the same Convex site URL.
 
 To migrate the current JSON database into Convex:
 
 ```bash
 CONVEX_URL=https://your-deployment.convex.cloud npm run migrate:convex
 ```
+
+Use the `.convex.cloud` URL for the migration script because it calls Convex functions through `ConvexHttpClient`; use the `.convex.site` URL for browser REST traffic because the app talks to HTTP actions.
 
 ## AI Provider Setup
 

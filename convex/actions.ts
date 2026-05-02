@@ -1,6 +1,6 @@
 import { v } from "convex/values";
+import { makeFunctionReference } from "convex/server";
 import { action } from "./_generated/server";
-import { api } from "./_generated/api";
 import {
   appError,
   cardValidator,
@@ -15,6 +15,12 @@ declare const process: { env: Record<string, string | undefined> };
 
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
+const getPrivateSettingsRef = makeFunctionReference<"query">("data:getPrivateSettings");
+const getBootstrapRef = makeFunctionReference<"query">("data:getBootstrap");
+const listWordsRef = makeFunctionReference<"query">("data:listWords");
+const saveSettingsRef = makeFunctionReference<"mutation">("data:saveSettings");
+const saveWordRef = makeFunctionReference<"mutation">("data:saveWord");
+const addImportLogRef = makeFunctionReference<"mutation">("data:addImportLog");
 
 function mapProviderError(status: number, message?: string) {
   if (status === 400) throw appError("PROVIDER_BAD_REQUEST", message || "Provider rejected the request.", 400);
@@ -330,7 +336,7 @@ async function decryptSecret(payload: string) {
 }
 
 async function resolveProviderPayload(ctx: any, body: any, options: any = {}) {
-  const currentSettings = await ctx.runQuery(api.data.getPrivateSettings, {});
+  const currentSettings = await ctx.runQuery(getPrivateSettingsRef, {});
   const provider = String(body.provider || body.active_provider || currentSettings.active_provider || "custom").trim();
   const activeProvider = body.active_provider === undefined ? currentSettings.active_provider : String(body.active_provider || "").trim();
   const savedProvider = currentSettings.providers[provider];
@@ -381,7 +387,7 @@ export const saveSettings = action({
       throw appError("BAD_REQUEST", "Choose one of the models detected for this API key before saving.", 400);
     }
     const encrypted = resolved.typedKey ? await encryptSecret(resolved.typedKey) : undefined;
-    const settings = await ctx.runMutation(api.data.saveSettings, {
+    const settings = await ctx.runMutation(saveSettingsRef, {
       provider: resolved.provider,
       active_provider: resolved.activeProvider,
       base_url: resolved.baseUrl,
@@ -406,7 +412,7 @@ export const generateWord = action({
   handler: async (ctx, args) => {
     const term = String(args.term || "").trim();
     if (!term) throw appError("BAD_REQUEST", "Enter a word or phrase to generate.", 400);
-    const settings = await ctx.runQuery(api.data.getPrivateSettings, {});
+    const settings = await ctx.runQuery(getPrivateSettingsRef, {});
     const provider = settings.active_provider;
     const providerSettings = settings.providers[provider];
     if (!providerSettings.model || !providerSettings.encrypted_api_key) {
@@ -463,7 +469,7 @@ async function fetchGoogleDocText(docUrl: string, accessToken: string) {
 export const importGoogleDoc = action({
   args: { url: v.string(), access_token: v.string() },
   handler: async (ctx, args) => {
-    const settings = await ctx.runQuery(api.data.getPrivateSettings, {});
+    const settings = await ctx.runQuery(getPrivateSettingsRef, {});
     const provider = settings.active_provider;
     const providerSettings = settings.providers[provider];
     const credentials = {
@@ -479,7 +485,7 @@ export const importGoogleDoc = action({
     } catch (error: any) {
       const data = error?.data || error;
       if (String(data?.code || "").startsWith("GOOGLE_DOC") || data?.code === "GOOGLE_OAUTH_REQUIRED") {
-        const bootstrap = await ctx.runQuery(api.data.getBootstrap, {});
+        const bootstrap = await ctx.runQuery(getBootstrapRef, {});
         return { requested_terms: [], imported: [], skipped: [], failed: [], import_error: data, stats: bootstrap.stats };
       }
       throw error;
@@ -487,7 +493,7 @@ export const importGoogleDoc = action({
 
     const terms = extractWordsFromText(text, 25);
     if (!terms.length) {
-      const bootstrap = await ctx.runQuery(api.data.getBootstrap, {});
+      const bootstrap = await ctx.runQuery(getBootstrapRef, {});
       return {
         requested_terms: [],
         imported: [],
@@ -501,7 +507,7 @@ export const importGoogleDoc = action({
     const imported: any[] = [];
     const skipped: any[] = [];
     const failed: any[] = [];
-    const current = await ctx.runQuery(api.data.listWords, {});
+    const current = await ctx.runQuery(listWordsRef, {});
     const existingTerms = new Set(current.words.map((word: any) => normalizeText(word.term)));
 
     for (const term of terms) {
@@ -511,7 +517,7 @@ export const importGoogleDoc = action({
       }
       try {
         const generated = await generateWordCardWithAI(credentials, term);
-        const saved = await ctx.runMutation(api.data.saveWord, {
+        const saved = await ctx.runMutation(saveWordRef, {
           card: generated.card,
           source: { type: "google-doc", label: args.url },
         });
@@ -522,14 +528,14 @@ export const importGoogleDoc = action({
       }
     }
 
-    await ctx.runMutation(api.data.addImportLog, {
+    await ctx.runMutation(addImportLogRef, {
       source_url: args.url,
       requested_terms: terms,
       imported_count: imported.length,
       skipped_count: skipped.length,
       failed_count: failed.length,
     });
-    const bootstrap = await ctx.runQuery(api.data.getBootstrap, {});
+    const bootstrap = await ctx.runQuery(getBootstrapRef, {});
     return { requested_terms: terms, imported, skipped, failed, import_error: null, stats: bootstrap.stats };
   },
 });
@@ -540,8 +546,8 @@ export const saveCardFromHttp = action({
     source: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
-    const word = await ctx.runMutation(api.data.saveWord, { card: args.card, source: args.source || {} });
-    const bootstrap = await ctx.runQuery(api.data.getBootstrap, {});
+    const word = await ctx.runMutation(saveWordRef, { card: args.card, source: args.source || {} });
+    const bootstrap = await ctx.runQuery(getBootstrapRef, {});
     return { word, stats: bootstrap.stats };
   },
 });
