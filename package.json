@@ -1,0 +1,21 @@
+{
+  "name": "wordforge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WordForge vocabulary trainer with AI-generated cards, Google Docs import, and SM-2 spaced repetition.",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "convex:dev": "convex dev",
+    "convex:codegen": "convex codegen",
+    "migrate:convex": "node scripts/migrate-json-to-convex.mjs",
+    "test": "node core.test.js"
+  },
+  "dependencies": {
+    "convex": "^1.37.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

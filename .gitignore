@@ -1,0 +1,10 @@
+data/
+node_modules/
+output/
+test-results/
+public/design-previews/
+.convex/
+.env.local
+*.log
+.DS_Store
+Thumbs.db
