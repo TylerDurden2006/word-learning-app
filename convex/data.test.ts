@@ -16,7 +16,8 @@ function makeCard(term = "circumspect") {
     synonyms: ["cautious", "prudent", "wary"],
     antonyms: ["rash", "reckless"],
     examples: Array.from({ length: 10 }, (_, index) => `Example sentence ${index + 1} for ${term}.`),
-    image_prompt: "A strategist leaning over a map before making a delicate move",
+    visual_cue: "A strategist leaning over a map before making a delicate move",
+    image_asset: "<svg></svg>",
   };
 }
 
@@ -25,7 +26,7 @@ function convexApp() {
 }
 
 describe("Convex database", () => {
-  test("bootstrap returns default empty app contract without creating local state", async () => {
+  test("bootstrap returns manual dictionary contract without AI settings", async () => {
     const t = convexApp();
     const bootstrap = await t.query(api.data.getBootstrap, {});
 
@@ -35,6 +36,10 @@ describe("Convex database", () => {
       accent: "American English",
       daily_goal: 12,
     });
+    expect(bootstrap.review_preferences).toMatchObject({
+      new_cards_per_day: 10,
+      review_prompt_mix: "balanced",
+    });
     expect(bootstrap.stats).toMatchObject({
       total_words: 0,
       due_words: 0,
@@ -42,8 +47,8 @@ describe("Convex database", () => {
     });
     expect(bootstrap.words).toEqual([]);
     expect(bootstrap.due_queue).toMatchObject({ count: 0, items: [] });
-    expect(bootstrap.settings.providers.custom.has_key).toBe(false);
-    expect(bootstrap.settings.providers.custom).not.toHaveProperty("encrypted_api_key");
+    expect(bootstrap).not.toHaveProperty("settings");
+    expect(bootstrap).not.toHaveProperty("imports");
   });
 
   test("word lifecycle saves, rejects duplicate terms, updates, reviews, and deletes", async () => {
@@ -55,6 +60,7 @@ describe("Convex database", () => {
     });
     expect(saved.id).toMatch(/^word_/);
     expect(saved.term_normalized).toBe("assiduous");
+    expect(saved.progress_state).toBe("new");
 
     const duplicate = await t.mutation(api.data.saveWord, {
       card: makeCard(" assiduous "),
@@ -78,38 +84,15 @@ describe("Convex database", () => {
       rating: "Good",
     });
     expect(review.word.review_count).toBe(1);
-    expect(review.word.repetitions).toBe(1);
+    expect(review.word.progress_state).toBe("learning");
     expect(review.review_event.word_id).toBe(saved.id);
+    expect(review.review_event.prompt_type).toBe("term_to_definition");
     expect(review.stats.reviews_today).toBeGreaterThanOrEqual(1);
 
     const removed = await t.mutation(api.data.deleteWord, { id: saved.id });
     expect(removed.id).toBe(saved.id);
     const listAfterDelete = await t.query(api.data.listWords, {});
     expect(listAfterDelete.words).toEqual([]);
-  });
-
-  test("settings keep encrypted keys private in public payloads", async () => {
-    const t = convexApp();
-
-    const publicSettings = await t.mutation(api.data.saveSettings, {
-      provider: "custom",
-      active_provider: "custom",
-      base_url: "https://provider.example/v1",
-      model: "model-a",
-      encrypted_api_key: "encrypted-secret",
-      connection_status: "connected",
-      last_tested_at: "2026-05-02T00:00:00.000Z",
-    });
-
-    expect(publicSettings.providers.custom.has_key).toBe(true);
-    expect(publicSettings.providers.custom).not.toHaveProperty("encrypted_api_key");
-
-    const bootstrap = await t.query(api.data.getBootstrap, {});
-    expect(bootstrap.settings.providers.custom.has_key).toBe(true);
-    expect(JSON.stringify(bootstrap.settings)).not.toContain("encrypted-secret");
-
-    const privateSettings = await t.query(api.data.getPrivateSettings, {});
-    expect(privateSettings.providers.custom.encrypted_api_key).toBe("encrypted-secret");
   });
 
   test("profile validation and import snapshot preserve data rules", async () => {
@@ -120,14 +103,20 @@ describe("Convex database", () => {
       daily_goal: 51,
     })).rejects.toThrow(/Daily review goal/);
 
+    const savedProfile = await t.mutation(api.data.saveProfile, {
+      learner_name: "Ada",
+      daily_goal: 7,
+      new_cards_per_day: 3,
+      review_prompt_mix: "context-first",
+    });
+    expect(savedProfile.profile.learner_name).toBe("Ada");
+    expect(savedProfile.review_preferences.new_cards_per_day).toBe(3);
+
     const result = await t.mutation(api.data.importSnapshot, {
-      settings: {
-        model: "legacy-model",
-        encrypted_api_key: "legacy-encrypted-key",
-      },
       profile: {
-        learner_name: "Ada",
-        daily_goal: 7,
+        learner_name: "Mina",
+        daily_goal: 9,
+        new_cards_per_day: 4,
       },
       words: [
         {
@@ -140,27 +129,18 @@ describe("Convex database", () => {
         { id: "word_invalid", term: "bad" },
       ],
       review_events: [{ id: "review_1", word_id: "word_legacy_1", rating: "Good" }],
-      imports: [{ id: "import_1", source_url: "https://docs.example", requested_terms: ["Lucid"] }],
     });
 
-    expect(result).toEqual({ words: 1, review_events: 1, imports: 1 });
+    expect(result).toEqual({ words: 1, review_events: 1 });
     const bootstrap = await t.query(api.data.getBootstrap, {});
-    expect(bootstrap.profile.learner_name).toBe("Ada");
+    expect(bootstrap.profile.learner_name).toBe("Mina");
     expect(bootstrap.words).toHaveLength(1);
     expect(bootstrap.words[0].id).toBe("word_legacy_1");
-    expect(bootstrap.imports).toHaveLength(1);
-  });
-
-  test("missing provider key fails generation before any provider call is needed", async () => {
-    const t = convexApp();
-
-    await expect(t.action(api.actions.generateWord, { term: "lucid" }))
-      .rejects.toThrow(/Add the custom model and API key/);
   });
 });
 
 describe("Convex HTTP actions", () => {
-  test("REST routes expose bootstrap, word CRUD, review, bad JSON, and CORS", async () => {
+  test("REST routes expose bootstrap, word CRUD, review, profile, bad JSON, and CORS", async () => {
     const t = convexApp();
 
     const options = await t.fetch("/api/bootstrap", { method: "OPTIONS" });
@@ -171,12 +151,25 @@ describe("Convex HTTP actions", () => {
     expect(bootstrap.status).toBe(200);
     expect((await bootstrap.json()).app_name).toBe("WordForge");
 
+    const removedGenerate = await t.fetch("/api/words/generate", {
+      method: "POST",
+      body: JSON.stringify({ term: "lucid" }),
+    });
+    expect(removedGenerate.status).toBe(404);
+
     const badJson = await t.fetch("/api/profile", {
       method: "POST",
       body: "{bad json",
     });
     expect(badJson.status).toBe(400);
     expect((await badJson.json()).error.code).toBe("BAD_REQUEST");
+
+    const profile = await t.fetch("/api/profile", {
+      method: "POST",
+      body: JSON.stringify({ learner_name: "Ada", daily_goal: 8, new_cards_per_day: 2 }),
+    });
+    expect(profile.status).toBe(200);
+    expect((await profile.json()).review_preferences.new_cards_per_day).toBe(2);
 
     const create = await t.fetch("/api/words", {
       method: "POST",

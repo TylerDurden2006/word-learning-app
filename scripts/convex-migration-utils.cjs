@@ -1,8 +1,8 @@
 function buildConvexSnapshot(raw, shared) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  const profile = source.profile && typeof source.profile === 'object'
-    ? { ...shared.DEFAULT_PROFILE, ...source.profile, accent: 'American English' }
-    : { ...shared.DEFAULT_PROFILE };
+  const profile = shared.normalizeProfile
+    ? shared.normalizeProfile(source.profile)
+    : { ...shared.DEFAULT_PROFILE, ...(source.profile || {}), accent: 'American English' };
 
   const words = Array.isArray(source.words)
     ? source.words.filter((word) => {
@@ -13,11 +13,9 @@ function buildConvexSnapshot(raw, shared) {
     : [];
 
   return {
-    settings: shared.normalizeSettings(source.settings),
     profile,
     words,
-    review_events: Array.isArray(source.review_events) ? source.review_events.filter((event) => event?.id) : [],
-    imports: Array.isArray(source.imports) ? source.imports.filter((item) => item?.id) : []
+    review_events: Array.isArray(source.review_events) ? source.review_events.filter((event) => event?.id) : []
   };
 }
 

@@ -91,48 +91,11 @@ http.route({
 });
 
 http.route({
-  path: "/api/settings",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    try {
-      return json(await ctx.runAction(api.actions.saveSettings, { body: await body(request) }));
-    } catch (error) {
-      return errorResponse(error);
-    }
-  }),
-});
-
-http.route({
-  path: "/api/settings/test",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    try {
-      return json(await ctx.runAction(api.actions.testSettings, { body: await body(request) }));
-    } catch (error) {
-      return errorResponse(error);
-    }
-  }),
-});
-
-http.route({
   path: "/api/profile",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     try {
-      return json({ profile: await ctx.runMutation(api.data.saveProfile, await body(request)) });
-    } catch (error) {
-      return errorResponse(error);
-    }
-  }),
-});
-
-http.route({
-  path: "/api/words/generate",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    try {
-      const payload = await body(request);
-      return json(await ctx.runAction(api.actions.generateWord, { term: String(payload.term || "") }));
+      return json(await ctx.runMutation(api.data.saveProfile, await body(request)));
     } catch (error) {
       return errorResponse(error);
     }
@@ -145,10 +108,12 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     try {
       const payload = await body(request);
-      return json(await ctx.runAction(api.actions.saveCardFromHttp, {
+      const word = await ctx.runMutation(api.data.saveWord, {
         card: payload.card || payload,
         source: payload.source || {},
-      }));
+      });
+      const bootstrap = await ctx.runQuery(api.data.getBootstrap, {});
+      return json({ word, stats: bootstrap.stats });
     } catch (error) {
       return errorResponse(error);
     }
@@ -164,22 +129,6 @@ http.route({
       return json(await ctx.runMutation(api.data.recordReview, {
         word_id: String(payload.word_id || ""),
         rating: String(payload.rating || ""),
-      }));
-    } catch (error) {
-      return errorResponse(error);
-    }
-  }),
-});
-
-http.route({
-  path: "/api/import-google-doc",
-  method: "POST",
-  handler: httpAction(async (ctx, request) => {
-    try {
-      const payload = await body(request);
-      return json(await ctx.runAction(api.actions.importGoogleDoc, {
-        url: String(payload.url || ""),
-        access_token: String(payload.access_token || ""),
       }));
     } catch (error) {
       return errorResponse(error);

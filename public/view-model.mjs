@@ -1,22 +1,38 @@
 export const REVIEW_RATING_ORDER = ['Again', 'Hard', 'Good', 'Easy'];
 
-export function createEmptyProviderForms() {
+export function createEmptyWordEditor() {
   return {
-    active_provider: 'custom',
-    providers: {
-      custom: { model: '', api_key: '' },
-      openai: { model: '', api_key: '' },
-      anthropic: { model: '', api_key: '' }
-    }
+    term: '',
+    definition: '',
+    nuances: '',
+    phonetics_us: '',
+    part_of_speech: '',
+    synonyms_text: '',
+    antonyms_text: '',
+    examples_text: '',
+    visual_cue: '',
+    image_asset: ''
   };
 }
 
-export function clearSensitiveSettings(settingsForm) {
-  const next = structuredClone(settingsForm);
-  for (const provider of Object.values(next.providers || {})) {
-    provider.api_key = '';
-  }
-  return next;
+export function splitCommaList(value) {
+  const seen = new Set();
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+export function splitExampleList(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export function getNavMarker(isActive) {

@@ -5,8 +5,11 @@ import { ConvexHttpClient } from 'convex/browser';
 import { makeFunctionReference } from 'convex/server';
 
 const require = createRequire(import.meta.url);
+const { loadEnvFile } = require('../env.js');
 const shared = require('../shared.js');
 const { buildConvexSnapshot } = require('./convex-migration-utils.cjs');
+
+loadEnvFile();
 
 const convexUrl = process.env.CONVEX_URL || process.env.NEXT_PUBLIC_CONVEX_URL || process.env.VITE_CONVEX_URL;
 if (!convexUrl) {

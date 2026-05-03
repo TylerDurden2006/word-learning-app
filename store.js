@@ -1,131 +1,56 @@
 const {
-  PROVIDER_IDS,
-  DEFAULT_SETTINGS,
   DEFAULT_PROFILE,
+  DEFAULT_REVIEW_PREFERENCES,
   createAppError,
   nowIso,
   readDb,
   writeDb,
   uid,
   normalizeText,
-  encryptSecret,
-  decryptSecret,
-  validateWordCard,
-  withGeneratedIllustration
+  normalizeProfile,
+  normalizeReviewPreferences,
+  validateWordCard
 } = require('./shared');
 const { getDueQueue } = require('./review');
 
-function getSettings() {
-  const db = readDb();
-  return { ...DEFAULT_SETTINGS, ...db.settings, providers: { ...db.settings.providers } };
-}
-
-function getPublicSettings(settings = getSettings()) {
-  return {
-    active_provider: settings.active_provider,
-    providers: Object.fromEntries(
-      PROVIDER_IDS.map((providerId) => {
-        const provider = settings.providers[providerId];
-        return [providerId, {
-          base_url: provider.base_url,
-          model: provider.model,
-          has_key: Boolean(provider.encrypted_api_key),
-          connection_status: provider.connection_status,
-          last_tested_at: provider.last_tested_at
-        }];
-      })
-    )
-  };
-}
-
 function getProfile() {
-  const db = readDb();
-  return { ...DEFAULT_PROFILE, ...(db.profile || {}) };
+  return normalizeProfile(readDb().profile);
 }
 
-function assertProviderId(providerId) {
-  if (!PROVIDER_IDS.includes(providerId)) {
-    throw createAppError('BAD_REQUEST', 'Unknown provider selected.', 400);
-  }
-}
-
-function saveSettings(payload) {
-  const db = readDb();
-  const current = getSettings();
-  const providerId = String(payload.provider || payload.active_provider || current.active_provider || 'custom').trim();
-  assertProviderId(providerId);
-
-  const activeProvider = payload.active_provider === undefined ? current.active_provider : String(payload.active_provider || '').trim();
-  assertProviderId(activeProvider);
-
-  const next = {
-    ...current,
-    active_provider: activeProvider,
-    providers: { ...current.providers },
-    american_accent_only: true
-  };
-
-  const existingProvider = current.providers[providerId] || {};
-  const provider = {
-    ...existingProvider,
-    base_url: payload.base_url === undefined ? existingProvider.base_url : String(payload.base_url || '').trim(),
-    model: payload.model === undefined ? existingProvider.model : String(payload.model || '').trim(),
-    connection_status: payload.connection_status === undefined
-      ? existingProvider.connection_status || 'saved'
-      : String(payload.connection_status || '').trim() || 'saved',
-    last_tested_at: payload.last_tested_at === undefined
-      ? existingProvider.last_tested_at || null
-      : payload.last_tested_at
-  };
-
-  if (typeof payload.api_key === 'string' && payload.api_key.trim()) {
-    provider.encrypted_api_key = encryptSecret(payload.api_key.trim());
-  }
-
-  next.providers[providerId] = provider;
-  db.settings = next;
-  writeDb(db);
-  return getSettings();
+function getReviewPreferences() {
+  return normalizeReviewPreferences(readDb().review_preferences);
 }
 
 function saveProfile(payload) {
   const db = readDb();
   const rawGoal = Number(payload.daily_goal);
-  if (!Number.isFinite(rawGoal) || !Number.isInteger(rawGoal) || rawGoal < 1 || rawGoal > 50) {
+  if (!Number.isInteger(rawGoal) || rawGoal < 1 || rawGoal > 50) {
     throw createAppError('BAD_REQUEST', 'Daily review goal must be a whole number between 1 and 50.', 400);
+  }
+
+  const rawNewCards = payload.new_cards_per_day === undefined
+    ? getReviewPreferences().new_cards_per_day
+    : Number(payload.new_cards_per_day);
+  if (!Number.isInteger(rawNewCards) || rawNewCards < 0 || rawNewCards > 50) {
+    throw createAppError('BAD_REQUEST', 'New cards per day must be a whole number between 0 and 50.', 400);
   }
 
   db.profile = {
     ...DEFAULT_PROFILE,
-    ...db.profile,
     learner_name: String(payload.learner_name || db.profile?.learner_name || DEFAULT_PROFILE.learner_name).trim() || DEFAULT_PROFILE.learner_name,
     daily_goal: rawGoal,
     accent: 'American English'
   };
-  writeDb(db);
-  return db.profile;
-}
-
-function getCredentials(providerId = null) {
-  const settings = getSettings();
-  const resolvedProviderId = providerId || settings.active_provider;
-  assertProviderId(resolvedProviderId);
-
-  const provider = settings.providers[resolvedProviderId];
-  if (!provider.model || !provider.encrypted_api_key) {
-    throw createAppError(
-      'INVALID_API_KEY',
-      `Add the ${resolvedProviderId} model and API key in Settings first.`,
-      400
-    );
-  }
-
-  return {
-    provider: resolvedProviderId,
-    baseUrl: provider.base_url,
-    model: provider.model,
-    apiKey: decryptSecret(provider.encrypted_api_key)
+  db.review_preferences = {
+    ...DEFAULT_REVIEW_PREFERENCES,
+    ...getReviewPreferences(),
+    new_cards_per_day: rawNewCards,
+    review_prompt_mix: ['balanced', 'meaning-first', 'context-first'].includes(payload.review_prompt_mix)
+      ? payload.review_prompt_mix
+      : getReviewPreferences().review_prompt_mix
   };
+  writeDb(db);
+  return { profile: db.profile, review_preferences: db.review_preferences };
 }
 
 function getWords() {
@@ -137,17 +62,11 @@ function getWordById(wordId) {
   return getWords().find((word) => word.id === wordId) || null;
 }
 
-function findWordByTerm(term) {
-  const normalized = normalizeText(term);
-  return getWords().find((word) => normalizeText(word.term) === normalized) || null;
-}
-
 function buildStoredWord(card, source = {}) {
   const now = new Date();
-  const base = withGeneratedIllustration(card);
   return {
     id: uid('word'),
-    term_normalized: normalizeText(base.term),
+    term_normalized: normalizeText(card.term),
     source_type: source.type || 'manual',
     source_label: source.label || 'Manual entry',
     created_at: nowIso(now),
@@ -159,19 +78,22 @@ function buildStoredWord(card, source = {}) {
     interval_days: 0,
     previous_interval_days: 0,
     ease_factor: 2.5,
+    learning_step: 0,
     last_quality: null,
     last_rating: null,
+    last_prompt_type: null,
     lapses: 0,
-    progress_state: 'learning',
+    leech_score: 0,
+    progress_state: 'new',
     archived: false,
-    ...base
+    ...card
   };
 }
 
 function saveWordCard(card, source = {}) {
   const validation = validateWordCard(card);
   if (!validation.ok) {
-    throw createAppError('INVALID_AI_RESPONSE', validation.error, 422);
+    throw createAppError('INVALID_WORD_CARD', validation.error, 422);
   }
 
   const db = readDb();
@@ -180,35 +102,10 @@ function saveWordCard(card, source = {}) {
     return existing;
   }
 
-  const record = buildStoredWord({ ...validation.value, image_svg: card.image_svg }, source);
+  const record = buildStoredWord(validation.value, source);
   db.words.unshift(record);
   writeDb(db);
   return record;
-}
-
-function buildEditableCard(existing, patch) {
-  const candidate = {
-    term: patch.term === undefined ? existing.term : patch.term,
-    definition: patch.definition === undefined ? existing.definition : patch.definition,
-    nuances: patch.nuances === undefined ? existing.nuances : patch.nuances,
-    phonetics_us: patch.phonetics_us === undefined ? existing.phonetics_us : patch.phonetics_us,
-    part_of_speech: patch.part_of_speech === undefined ? existing.part_of_speech : patch.part_of_speech,
-    synonyms: patch.synonyms === undefined ? existing.synonyms : patch.synonyms,
-    antonyms: patch.antonyms === undefined ? existing.antonyms : patch.antonyms,
-    examples: patch.examples === undefined ? existing.examples : patch.examples,
-    image_prompt: patch.image_prompt === undefined ? existing.image_prompt : patch.image_prompt,
-    image_svg: patch.image_svg === undefined ? existing.image_svg : patch.image_svg
-  };
-
-  const validation = validateWordCard(candidate);
-  if (!validation.ok) {
-    throw createAppError('INVALID_AI_RESPONSE', validation.error, 422);
-  }
-
-  return withGeneratedIllustration({
-    ...validation.value,
-    image_svg: candidate.image_svg
-  });
 }
 
 function updateWord(wordId, patch) {
@@ -219,8 +116,12 @@ function updateWord(wordId, patch) {
   }
 
   const existing = db.words[index];
-  const baseCard = buildEditableCard(existing, patch);
-  const nextNormalized = normalizeText(baseCard.term);
+  const validation = validateWordCard({ ...existing, ...patch });
+  if (!validation.ok) {
+    throw createAppError('INVALID_WORD_CARD', validation.error, 422);
+  }
+
+  const nextNormalized = normalizeText(validation.value.term);
   const duplicate = db.words.find((word) => word.id !== wordId && normalizeText(word.term) === nextNormalized);
   if (duplicate) {
     throw createAppError('BAD_REQUEST', 'Another saved card already uses this term.', 409);
@@ -228,8 +129,7 @@ function updateWord(wordId, patch) {
 
   const next = {
     ...existing,
-    ...patch,
-    ...baseCard,
+    ...validation.value,
     term_normalized: nextNormalized,
     updated_at: nowIso()
   };
@@ -259,19 +159,6 @@ function addReviewEvent(event) {
   return event;
 }
 
-function addImportLog(payload) {
-  const db = readDb();
-  const entry = {
-    id: uid('import'),
-    created_at: nowIso(),
-    ...payload
-  };
-  db.imports.unshift(entry);
-  db.imports = db.imports.slice(0, 40);
-  writeDb(db);
-  return entry;
-}
-
 function buildStats() {
   const db = readDb();
   const words = [...db.words];
@@ -298,38 +185,31 @@ function buildStats() {
 }
 
 function getBootstrap() {
-  const settings = getSettings();
   const profile = getProfile();
+  const reviewPreferences = getReviewPreferences();
   const stats = buildStats();
+  const words = getWords();
   return {
     app_name: 'WordForge',
     accent_mode: 'American English',
-    google_oauth: {
-      client_id: String(process.env.GOOGLE_OAUTH_CLIENT_ID || '').trim(),
-      scope: 'https://www.googleapis.com/auth/drive.readonly'
-    },
-    settings: getPublicSettings(settings),
     profile,
+    review_preferences: reviewPreferences,
     stats,
-    imports: readDb().imports.slice(0, 5)
+    words,
+    due_queue: getDueQueue(words)
   };
 }
 
 module.exports = {
-  getSettings,
-  getPublicSettings,
-  saveSettings,
-  saveProfile,
   getProfile,
-  getCredentials,
+  getReviewPreferences,
+  saveProfile,
   getWords,
   getWordById,
-  findWordByTerm,
   saveWordCard,
   updateWord,
   deleteWord,
   addReviewEvent,
-  addImportLog,
   buildStats,
   getBootstrap
 };

@@ -9,51 +9,16 @@ const DATA_DIR = process.env.WORD_FORGE_DATA_DIR
 const DB_PATH = process.env.WORD_FORGE_DB_PATH
   ? path.resolve(process.env.WORD_FORGE_DB_PATH)
   : path.join(DATA_DIR, 'db.json');
-const MASTER_KEY_PATH = process.env.WORD_FORGE_MASTER_KEY_PATH
-  ? path.resolve(process.env.WORD_FORGE_MASTER_KEY_PATH)
-  : path.join(DATA_DIR, 'server.key');
-
-const PROVIDER_IDS = ['custom', 'openai', 'anthropic'];
-const PROVIDER_LABELS = {
-  custom: 'Custom',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic'
-};
-
-const PROVIDER_DEFAULTS = Object.freeze({
-  custom: {
-    base_url: '',
-    model: '',
-    encrypted_api_key: '',
-    connection_status: 'missing',
-    last_tested_at: null
-  },
-  openai: {
-    base_url: '',
-    model: '',
-    encrypted_api_key: '',
-    connection_status: 'missing',
-    last_tested_at: null
-  },
-  anthropic: {
-    base_url: '',
-    model: '',
-    encrypted_api_key: '',
-    connection_status: 'missing',
-    last_tested_at: null
-  }
-});
-
-const DEFAULT_SETTINGS = {
-  active_provider: 'custom',
-  providers: cloneProviderDefaults(),
-  american_accent_only: true
-};
 
 const DEFAULT_PROFILE = {
   learner_name: 'Learner',
   accent: 'American English',
   daily_goal: 12
+};
+
+const DEFAULT_REVIEW_PREFERENCES = {
+  new_cards_per_day: 10,
+  review_prompt_mix: 'balanced'
 };
 
 const WORD_CARD_FIELDS = [
@@ -65,14 +30,8 @@ const WORD_CARD_FIELDS = [
   'synonyms',
   'antonyms',
   'examples',
-  'image_prompt'
+  'visual_cue'
 ];
-
-function cloneProviderDefaults() {
-  return Object.fromEntries(
-    PROVIDER_IDS.map((providerId) => [providerId, { ...PROVIDER_DEFAULTS[providerId] }])
-  );
-}
 
 function createAppError(code, message, status = 400, details = null) {
   const error = new Error(message);
@@ -120,12 +79,36 @@ function uniqueStrings(values, limit = 50) {
   return items;
 }
 
-function slugify(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+function normalizeReviewPreferences(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const rawNewCards = Number(source.new_cards_per_day);
+  const promptMix = ['balanced', 'meaning-first', 'context-first'].includes(source.review_prompt_mix)
+    ? source.review_prompt_mix
+    : DEFAULT_REVIEW_PREFERENCES.review_prompt_mix;
+
+  return {
+    new_cards_per_day: Number.isInteger(rawNewCards) ? clamp(rawNewCards, 0, 50) : DEFAULT_REVIEW_PREFERENCES.new_cards_per_day,
+    review_prompt_mix: promptMix
+  };
+}
+
+function normalizeProfile(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const rawGoal = Number(source.daily_goal);
+  return {
+    learner_name: String(source.learner_name || DEFAULT_PROFILE.learner_name).trim() || DEFAULT_PROFILE.learner_name,
+    accent: 'American English',
+    daily_goal: Number.isInteger(rawGoal) ? clamp(rawGoal, 1, 50) : DEFAULT_PROFILE.daily_goal
+  };
+}
+
+function createEmptyDb() {
+  return {
+    profile: { ...DEFAULT_PROFILE },
+    review_preferences: { ...DEFAULT_REVIEW_PREFERENCES },
+    words: [],
+    review_events: []
+  };
 }
 
 function ensureDataFiles() {
@@ -135,189 +118,50 @@ function ensureDataFiles() {
   }
 }
 
-function createEmptyDb() {
-  return {
-    settings: normalizeSettings(DEFAULT_SETTINGS),
-    profile: { ...DEFAULT_PROFILE },
-    words: [],
-    review_events: [],
-    imports: []
-  };
-}
-
-function normalizeProviderEntry(value, providerId) {
-  const source = value && typeof value === 'object' ? value : {};
-  return {
-    ...PROVIDER_DEFAULTS[providerId],
-    base_url: String(source.base_url || '').trim(),
-    model: String(source.model || '').trim(),
-    encrypted_api_key: String(source.encrypted_api_key || '').trim(),
-    connection_status: String(source.connection_status || PROVIDER_DEFAULTS[providerId].connection_status || 'missing'),
-    last_tested_at: source.last_tested_at || null
-  };
-}
-
-function looksLikeLegacySettings(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && 'model' in value && !('providers' in value);
-}
-
-function normalizeSettings(value) {
-  const defaults = {
-    active_provider: DEFAULT_SETTINGS.active_provider,
-    providers: cloneProviderDefaults(),
-    american_accent_only: true
-  };
-
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return defaults;
-  }
-
-  if (looksLikeLegacySettings(value)) {
-    return {
-      active_provider: 'custom',
-      providers: {
-        ...cloneProviderDefaults(),
-        custom: normalizeProviderEntry({
-          base_url: value.base_url,
-          model: value.model,
-          encrypted_api_key: value.encrypted_api_key,
-          connection_status: value.connection_status,
-          last_tested_at: value.last_tested_at
-        }, 'custom')
-      },
-      american_accent_only: true
-    };
-  }
-
-  const next = {
-    active_provider: PROVIDER_IDS.includes(value.active_provider) ? value.active_provider : 'custom',
-    providers: cloneProviderDefaults(),
-    american_accent_only: true
-  };
-
-  const rawProviders = value.providers && typeof value.providers === 'object' ? value.providers : {};
-  for (const providerId of PROVIDER_IDS) {
-    next.providers[providerId] = normalizeProviderEntry(rawProviders[providerId], providerId);
-  }
-
-  return next;
-}
-
 function readDb() {
   ensureDataFiles();
   const parsed = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
   return {
-    settings: normalizeSettings(parsed.settings),
-    profile: { ...DEFAULT_PROFILE, ...(parsed.profile || {}) },
+    profile: normalizeProfile(parsed.profile),
+    review_preferences: normalizeReviewPreferences(parsed.review_preferences),
     words: Array.isArray(parsed.words) ? parsed.words : [],
-    review_events: Array.isArray(parsed.review_events) ? parsed.review_events : [],
-    imports: Array.isArray(parsed.imports) ? parsed.imports : []
+    review_events: Array.isArray(parsed.review_events) ? parsed.review_events : []
   };
 }
 
 function writeDb(db) {
   ensureDataFiles();
   const payload = {
-    ...db,
-    settings: normalizeSettings(db.settings)
+    profile: normalizeProfile(db.profile),
+    review_preferences: normalizeReviewPreferences(db.review_preferences),
+    words: Array.isArray(db.words) ? db.words : [],
+    review_events: Array.isArray(db.review_events) ? db.review_events : []
   };
   const tempPath = `${DB_PATH}.tmp`;
   fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2));
   fs.renameSync(tempPath, DB_PATH);
 }
 
-function getMasterKey() {
-  if (process.env.APP_MASTER_KEY) {
-    return crypto.createHash('sha256').update(process.env.APP_MASTER_KEY).digest();
+function normalizeImageAsset(value) {
+  const asset = String(value || '').trim();
+  if (!asset) return '';
+  if (asset.includes('<script')) {
+    throw createAppError('BAD_REQUEST', 'Image assets cannot include script tags.', 400);
   }
-
-  ensureDataFiles();
-  if (!fs.existsSync(MASTER_KEY_PATH)) {
-    fs.writeFileSync(MASTER_KEY_PATH, crypto.randomBytes(32).toString('base64'));
-  }
-
-  return Buffer.from(fs.readFileSync(MASTER_KEY_PATH, 'utf8').trim(), 'base64');
-}
-
-function encryptSecret(plainText) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', getMasterKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(String(plainText), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
-}
-
-function decryptSecret(payload) {
-  const [ivBase64, tagBase64, encryptedBase64] = String(payload || '').split('.');
-  if (!ivBase64 || !tagBase64 || !encryptedBase64) {
-    throw createAppError('INVALID_API_KEY', 'Stored API key could not be decrypted.', 500);
-  }
-
-  const decipher = crypto.createDecipheriv('aes-256-gcm', getMasterKey(), Buffer.from(ivBase64, 'base64'));
-  decipher.setAuthTag(Buffer.from(tagBase64, 'base64'));
-  return Buffer.concat([decipher.update(Buffer.from(encryptedBase64, 'base64')), decipher.final()]).toString('utf8');
-}
-
-function isSvg(value) {
-  return typeof value === 'string' && value.includes('<svg') && value.includes('</svg>');
-}
-
-function buildFallbackIllustration(card) {
-  const seed = crypto.createHash('sha256').update(`${card.term}|${card.part_of_speech}|${card.image_prompt || ''}`).digest('hex');
-  const palette = [
-    `#${seed.slice(0, 6)}`,
-    `#${seed.slice(6, 12)}`,
-    `#${seed.slice(12, 18)}`,
-    `#${seed.slice(18, 24)}`
-  ];
-  const safeTerm = escapeXml(card.term);
-  const safeCue = escapeXml((card.antonyms || [])[0] || (card.synonyms || [])[0] || card.part_of_speech);
-  const safePrompt = escapeXml((card.image_prompt || '').slice(0, 110));
-
-  return [
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 480" role="img" aria-label="Word illustration">',
-    '<defs>',
-    '<linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">',
-    `<stop offset="0%" stop-color="${palette[0]}"/>`,
-    `<stop offset="100%" stop-color="${palette[1]}"/>`,
-    '</linearGradient>',
-    '<linearGradient id="glass" x1="0%" x2="100%" y1="0%" y2="100%">',
-    `<stop offset="0%" stop-color="${palette[2]}" stop-opacity="0.95"/>`,
-    `<stop offset="100%" stop-color="${palette[3]}" stop-opacity="0.65"/>`,
-    '</linearGradient>',
-    '</defs>',
-    '<rect width="720" height="480" rx="36" fill="url(#bg)"/>',
-    '<circle cx="130" cy="120" r="110" fill="#ffffff" fill-opacity="0.14"/>',
-    '<circle cx="595" cy="96" r="84" fill="#ffffff" fill-opacity="0.16"/>',
-    '<circle cx="578" cy="356" r="126" fill="#ffffff" fill-opacity="0.12"/>',
-    '<rect x="72" y="74" width="576" height="332" rx="28" fill="url(#glass)" fill-opacity="0.88" stroke="#ffffff" stroke-opacity="0.24"/>',
-    '<path d="M138 328c68-112 133-168 194-168 55 0 108 30 162 95 36 42 64 61 86 61 15 0 33-7 54-22v74H138z" fill="#ffffff" fill-opacity="0.2"/>',
-    '<path d="M176 276c34-61 74-91 120-91 48 0 84 18 109 56 19 29 31 45 37 49 18 15 45 22 82 22 22 0 44-3 66-10" fill="none" stroke="#ffffff" stroke-opacity="0.58" stroke-width="12" stroke-linecap="round"/>',
-    `<text x="112" y="170" fill="#ffffff" fill-opacity="0.92" font-family="Georgia, 'Times New Roman', serif" font-size="54" font-style="italic">${safeTerm}</text>`,
-    `<text x="116" y="214" fill="#ffffff" fill-opacity="0.74" font-family="'Segoe UI', Arial, sans-serif" font-size="18" letter-spacing="3">${escapeXml(card.part_of_speech.toUpperCase())}</text>`,
-    `<text x="114" y="362" fill="#ffffff" fill-opacity="0.88" font-family="'Segoe UI', Arial, sans-serif" font-size="15">${safePrompt}</text>`,
-    `<text x="114" y="390" fill="#ffffff" fill-opacity="0.72" font-family="'Segoe UI', Arial, sans-serif" font-size="14">contrast cue: ${safeCue}</text>`,
-    '</svg>'
-  ].join('');
-}
-
-function escapeXml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+  return asset;
 }
 
 function validateWordCard(candidate) {
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
-    return { ok: false, error: 'Response must be a JSON object.' };
+    return { ok: false, error: 'Card must be a JSON object.' };
   }
 
-  const missing = WORD_CARD_FIELDS.filter((field) => !(field in candidate));
-  if (missing.length) {
-    return { ok: false, error: `Missing required fields: ${missing.join(', ')}` };
+  const visualCue = candidate.visual_cue === undefined ? candidate.image_prompt : candidate.visual_cue;
+  let imageAsset;
+  try {
+    imageAsset = normalizeImageAsset(candidate.image_asset === undefined ? candidate.image_svg : candidate.image_asset);
+  } catch (error) {
+    return { ok: false, error: error.message };
   }
 
   const sanitized = {
@@ -331,10 +175,11 @@ function validateWordCard(candidate) {
     examples: Array.isArray(candidate.examples)
       ? candidate.examples.map((item) => String(item || '').trim()).filter(Boolean)
       : [],
-    image_prompt: String(candidate.image_prompt || '').trim()
+    visual_cue: String(visualCue || '').trim(),
+    image_asset: imageAsset
   };
 
-  for (const field of ['term', 'definition', 'nuances', 'phonetics_us', 'part_of_speech', 'image_prompt']) {
+  for (const field of ['term', 'definition', 'nuances', 'phonetics_us', 'part_of_speech', 'visual_cue']) {
     if (!sanitized[field]) {
       return { ok: false, error: `Field "${field}" must be a non-empty string.` };
     }
@@ -358,27 +203,25 @@ function validateWordCard(candidate) {
   };
 }
 
-function withGeneratedIllustration(card) {
-  return {
-    ...card,
-    image_svg: isSvg(card.image_svg) ? card.image_svg : buildFallbackIllustration(card)
-  };
+function isSvg(value) {
+  return typeof value === 'string' && value.includes('<svg') && value.includes('</svg');
 }
 
-function encodeSvgDataUri(svg) {
-  return `data:image/svg+xml;base64,${Buffer.from(String(svg || ''), 'utf8').toString('base64')}`;
+function encodeImageAsset(asset) {
+  const value = String(asset || '').trim();
+  if (!value) return '';
+  if (isSvg(value)) {
+    return `data:image/svg+xml;base64,${Buffer.from(value, 'utf8').toString('base64')}`;
+  }
+  return value;
 }
 
 module.exports = {
   ROOT_DIR,
   DATA_DIR,
   DB_PATH,
-  MASTER_KEY_PATH,
-  PROVIDER_IDS,
-  PROVIDER_LABELS,
-  PROVIDER_DEFAULTS,
-  DEFAULT_SETTINGS,
   DEFAULT_PROFILE,
+  DEFAULT_REVIEW_PREFERENCES,
   WORD_CARD_FIELDS,
   createAppError,
   nowIso,
@@ -386,17 +229,12 @@ module.exports = {
   uid,
   normalizeText,
   uniqueStrings,
-  slugify,
-  cloneProviderDefaults,
-  normalizeSettings,
+  normalizeProfile,
+  normalizeReviewPreferences,
   createEmptyDb,
   ensureDataFiles,
   readDb,
   writeDb,
-  encryptSecret,
-  decryptSecret,
   validateWordCard,
-  withGeneratedIllustration,
-  buildFallbackIllustration,
-  encodeSvgDataUri
+  encodeImageAsset
 };

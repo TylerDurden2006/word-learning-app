@@ -1,30 +1,13 @@
 import { ConvexError, v } from "convex/values";
 
-export const providerIds = ["custom", "openai", "anthropic"] as const;
-export type ProviderId = (typeof providerIds)[number];
-
-export const defaultProvider = {
-  base_url: "",
-  model: "",
-  encrypted_api_key: "",
-  connection_status: "missing",
-  last_tested_at: null as string | null,
-};
-
-export const defaultSettings = {
-  active_provider: "custom",
-  providers: {
-    custom: { ...defaultProvider },
-    openai: { ...defaultProvider },
-    anthropic: { ...defaultProvider },
-  },
-  american_accent_only: true,
-};
+export const reviewRatingOrder = ["Again", "Hard", "Good", "Easy"] as const;
 
 export const defaultProfile = {
   learner_name: "Learner",
   accent: "American English",
   daily_goal: 12,
+  new_cards_per_day: 10,
+  review_prompt_mix: "balanced",
 };
 
 export const cardValidator = v.object({
@@ -36,7 +19,9 @@ export const cardValidator = v.object({
   synonyms: v.array(v.string()),
   antonyms: v.array(v.string()),
   examples: v.array(v.string()),
-  image_prompt: v.string(),
+  visual_cue: v.optional(v.string()),
+  image_asset: v.optional(v.string()),
+  image_prompt: v.optional(v.string()),
   image_svg: v.optional(v.string()),
 });
 
@@ -55,6 +40,10 @@ export function nowIso(now = new Date()) {
 
 export function uid(prefix = "id") {
   return `${prefix}_${crypto.randomUUID()}`;
+}
+
+export function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 export function normalizeText(value: unknown) {
@@ -81,69 +70,28 @@ export function uniqueStrings(values: unknown[], limit = 50) {
   return items;
 }
 
-export function normalizeProviderEntry(value: any, providerId: ProviderId) {
-  const source = value && typeof value === "object" ? value : {};
+export function normalizeProfile(value: any) {
+  const rawGoal = Number(value?.daily_goal);
+  const rawNewCards = Number(value?.new_cards_per_day);
+  const promptMix = ["balanced", "meaning-first", "context-first"].includes(value?.review_prompt_mix)
+    ? value.review_prompt_mix
+    : defaultProfile.review_prompt_mix;
   return {
-    ...defaultSettings.providers[providerId],
-    base_url: String(source.base_url || "").trim(),
-    model: String(source.model || "").trim(),
-    encrypted_api_key: String(source.encrypted_api_key || "").trim(),
-    connection_status: String(source.connection_status || defaultProvider.connection_status),
-    last_tested_at: source.last_tested_at || null,
-  };
-}
-
-export function normalizeSettings(value: any) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return structuredClone(defaultSettings);
-  }
-
-  if ("model" in value && !("providers" in value)) {
-    return {
-      active_provider: "custom",
-      providers: {
-        custom: normalizeProviderEntry(value, "custom"),
-        openai: { ...defaultProvider },
-        anthropic: { ...defaultProvider },
-      },
-      american_accent_only: true,
-    };
-  }
-
-  const active = providerIds.includes(value.active_provider) ? value.active_provider : "custom";
-  const rawProviders = value.providers && typeof value.providers === "object" ? value.providers : {};
-  return {
-    active_provider: active,
-    providers: {
-      custom: normalizeProviderEntry(rawProviders.custom, "custom"),
-      openai: normalizeProviderEntry(rawProviders.openai, "openai"),
-      anthropic: normalizeProviderEntry(rawProviders.anthropic, "anthropic"),
-    },
-    american_accent_only: true,
-  };
-}
-
-export function publicSettings(settings: any) {
-  return {
-    active_provider: settings.active_provider,
-    providers: Object.fromEntries(providerIds.map((providerId) => {
-      const provider = settings.providers[providerId];
-      return [providerId, {
-        base_url: provider.base_url,
-        model: provider.model,
-        has_key: Boolean(provider.encrypted_api_key),
-        connection_status: provider.connection_status,
-        last_tested_at: provider.last_tested_at,
-      }];
-    })),
+    learner_name: String(value?.learner_name || defaultProfile.learner_name).trim() || defaultProfile.learner_name,
+    accent: "American English",
+    daily_goal: Number.isInteger(rawGoal) ? clamp(rawGoal, 1, 50) : defaultProfile.daily_goal,
+    new_cards_per_day: Number.isInteger(rawNewCards) ? clamp(rawNewCards, 0, 50) : defaultProfile.new_cards_per_day,
+    review_prompt_mix: promptMix,
   };
 }
 
 export function validateWordCard(candidate: any) {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-    return { ok: false as const, error: "Response must be a JSON object." };
+    return { ok: false as const, error: "Card must be a JSON object." };
   }
 
+  const visualCue = candidate.visual_cue === undefined ? candidate.image_prompt : candidate.visual_cue;
+  const imageAsset = candidate.image_asset === undefined ? candidate.image_svg : candidate.image_asset;
   const sanitized = {
     term: String(candidate.term || "").trim(),
     definition: String(candidate.definition || "").trim(),
@@ -155,14 +103,13 @@ export function validateWordCard(candidate: any) {
     examples: Array.isArray(candidate.examples)
       ? candidate.examples.map((item: unknown) => String(item || "").trim()).filter(Boolean)
       : [],
-    image_prompt: String(candidate.image_prompt || "").trim(),
-    image_svg: typeof candidate.image_svg === "string" ? candidate.image_svg : undefined,
+    visual_cue: String(visualCue || "").trim(),
+    image_asset: String(imageAsset || "").trim(),
   };
 
-  for (const field of ["term", "definition", "nuances", "phonetics_us", "part_of_speech", "image_prompt"] as const) {
-    if (!sanitized[field]) {
-      return { ok: false as const, error: `Field "${field}" must be a non-empty string.` };
-    }
+  if (sanitized.image_asset.includes("<script")) return { ok: false as const, error: "Image assets cannot include script tags." };
+  for (const field of ["term", "definition", "nuances", "phonetics_us", "part_of_speech", "visual_cue"] as const) {
+    if (!sanitized[field]) return { ok: false as const, error: `Field "${field}" must be a non-empty string.` };
   }
   if (sanitized.examples.length !== 10) return { ok: false as const, error: "examples must contain exactly 10 sentences." };
   if (!sanitized.synonyms.length) return { ok: false as const, error: "synonyms must contain at least one entry." };
@@ -170,49 +117,35 @@ export function validateWordCard(candidate: any) {
   return { ok: true as const, value: sanitized };
 }
 
-function escapeXml(value: unknown) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+const promptTypes = [
+  "term_to_definition",
+  "definition_to_term",
+  "synonym_recall",
+  "antonym_contrast",
+  "example_context",
+  "pronunciation_recall",
+];
+
+export function getReviewPromptType(word: any) {
+  const offset = promptTypes.indexOf(word.last_prompt_type);
+  const base = Number(word.review_count || 0);
+  return promptTypes[(base + (offset >= 0 ? 1 : 0)) % promptTypes.length];
 }
 
-export function fallbackIllustration(card: any) {
-  const safeTerm = escapeXml(card.term);
-  const safePrompt = escapeXml(String(card.image_prompt || "").slice(0, 110));
-  return [
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 480" role="img" aria-label="Word illustration">',
-    '<rect width="720" height="480" rx="36" fill="#173b34"/>',
-    '<circle cx="130" cy="120" r="110" fill="#e7b84f" fill-opacity="0.25"/>',
-    '<circle cx="595" cy="96" r="84" fill="#ffffff" fill-opacity="0.16"/>',
-    '<rect x="72" y="74" width="576" height="332" rx="28" fill="#275c4c" stroke="#fffaf0" stroke-opacity="0.28"/>',
-    `<text x="112" y="180" fill="#fffaf0" font-family="Georgia, serif" font-size="58" font-style="italic">${safeTerm}</text>`,
-    `<text x="114" y="362" fill="#fffaf0" fill-opacity="0.82" font-family="Arial, sans-serif" font-size="16">${safePrompt}</text>`,
-    '</svg>',
-  ].join("");
-}
-
-export function withGeneratedIllustration(card: any) {
-  const svg = typeof card.image_svg === "string" && card.image_svg.includes("<svg") && card.image_svg.includes("</svg")
-    ? card.image_svg
-    : fallbackIllustration(card);
-  return { ...card, image_svg: svg };
+function clozeExample(word: any) {
+  const example = String((word.examples || [])[0] || "");
+  if (!example || !word.term) return example;
+  const escaped = String(word.term).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return example.replace(new RegExp(`\\b${escaped}\\b`, "i"), "_____");
 }
 
 export function buildReviewPrompt(word: any) {
-  const cycle = ["term_to_definition", "definition_to_term", "synonym_ladder", "example_focus"];
-  const promptType = cycle[Number(word.review_count || 0) % cycle.length];
-  if (promptType === "definition_to_term") {
-    return { type: promptType, headline: "Recall the word", prompt: word.definition, support: `American pronunciation: ${word.phonetics_us}` };
-  }
-  if (promptType === "synonym_ladder") {
-    return { type: promptType, headline: "Recall from synonyms", prompt: `Which word fits these shades of meaning: ${(word.synonyms || []).slice(0, 3).join(", ")}?`, support: word.nuances };
-  }
-  if (promptType === "example_focus") {
-    return { type: promptType, headline: "Recall from context", prompt: (word.examples || [])[0], support: "Think of the precise meaning, tone, and pronunciation before you flip." };
-  }
+  const promptType = getReviewPromptType(word);
+  if (promptType === "definition_to_term") return { type: promptType, headline: "Recall the word", prompt: word.definition, support: `Part of speech: ${word.part_of_speech}` };
+  if (promptType === "synonym_recall") return { type: promptType, headline: "Recall from synonyms", prompt: `Which word fits these meanings: ${(word.synonyms || []).slice(0, 3).join(", ")}?`, support: word.nuances };
+  if (promptType === "antonym_contrast") return { type: promptType, headline: "Recall from contrast", prompt: `Which word contrasts with: ${(word.antonyms || []).slice(0, 3).join(", ")}?`, support: word.visual_cue };
+  if (promptType === "example_context") return { type: promptType, headline: "Recall from context", prompt: clozeExample(word), support: "Name the missing word, then recall its definition before revealing." };
+  if (promptType === "pronunciation_recall") return { type: promptType, headline: "Recall pronunciation", prompt: word.term, support: "Say the American pronunciation and part of speech before revealing." };
   return { type: promptType, headline: "Recall the definition", prompt: word.term, support: `${word.part_of_speech} | ${word.phonetics_us}` };
 }
 
@@ -222,54 +155,83 @@ export function getDueQueue(words: any[], now = new Date()) {
     .map((word) => {
       const overdueMs = Math.max(0, now.getTime() - new Date(word.next_review_at).getTime());
       const overdueHours = overdueMs / (1000 * 60 * 60);
-      const priority = overdueHours * 4 + (word.progress_state === "learning" ? 20 : 0) + (3.2 - Number(word.ease_factor || 2.5)) * 10 + Number(word.lapses || 0) * 2;
+      const stateWeight: Record<string, number> = { new: 24, learning: 28, relearning: 32, leech: 34, reviewing: 16, mastered: 4 };
+      const priority = overdueHours * 3 + (stateWeight[word.progress_state] ?? 12) + (3.2 - Number(word.ease_factor || 2.5)) * 8 + Number(word.lapses || 0) * 3 + Number(word.leech_score || 0) * 5;
       return { ...word, overdue_hours: Number(overdueHours.toFixed(1)), priority_score: Number(priority.toFixed(2)), review_prompt: buildReviewPrompt(word) };
     })
     .sort((left, right) => right.priority_score !== left.priority_score ? right.priority_score - left.priority_score : new Date(left.next_review_at).getTime() - new Date(right.next_review_at).getTime());
   return { count: dueWords.length, items: dueWords };
 }
 
-export function sm2(word: any, reviewLabel: string, now = new Date()) {
+function scheduleInterval(word: any, reviewLabel: string) {
   const qualities: Record<string, number> = { Again: 0, Hard: 3, Good: 4, Easy: 5 };
   const quality = qualities[reviewLabel];
   if (typeof quality !== "number") throw appError("BAD_REQUEST", "Unknown review label.", 400);
-
   let repetitions = Number(word.repetitions || 0);
   let intervalDays = Number(word.interval_days || 0);
   let easeFactor = Number(word.ease_factor || 2.5);
-  const previousInterval = intervalDays;
+  let learningStep = Number(word.learning_step || 0);
+  let progressState = word.progress_state || "new";
+  let leechScore = Number(word.leech_score || 0);
+  let lapses = Number(word.lapses || 0);
 
   if (quality < 3) {
     repetitions = 0;
-    intervalDays = 1;
+    intervalDays = progressState === "new" ? 0.25 : 1;
+    learningStep = 0;
+    lapses += 1;
+    leechScore += 1;
+    progressState = lapses >= 2 ? "relearning" : "learning";
   } else {
-    if (repetitions === 0) intervalDays = 1;
-    else if (repetitions === 1) intervalDays = 6;
-    else intervalDays = Math.max(1, Math.round(intervalDays * easeFactor));
-    repetitions += 1;
-    if (reviewLabel === "Hard") intervalDays = Math.max(1, Math.round(intervalDays * 0.8));
-    if (reviewLabel === "Easy") intervalDays = Math.max(intervalDays + 1, Math.round(intervalDays * 1.25));
+    leechScore = Math.max(0, leechScore - (reviewLabel === "Easy" ? 2 : 1));
+    if (progressState === "new" || progressState === "learning" || progressState === "relearning") {
+      learningStep += 1;
+      if (learningStep === 1) {
+        intervalDays = reviewLabel === "Easy" ? 1 : 0.5;
+        progressState = "learning";
+      } else {
+        repetitions = Math.max(1, repetitions + 1);
+        intervalDays = reviewLabel === "Hard" ? 1 : reviewLabel === "Easy" ? 4 : 2;
+        progressState = "reviewing";
+      }
+    } else {
+      if (repetitions === 0) intervalDays = 1;
+      else if (repetitions === 1) intervalDays = 6;
+      else intervalDays = Math.max(1, Math.round(intervalDays * easeFactor));
+      repetitions += 1;
+      if (reviewLabel === "Hard") intervalDays = Math.max(1, Math.round(intervalDays * 0.72));
+      if (reviewLabel === "Easy") intervalDays = Math.max(intervalDays + 2, Math.round(intervalDays * 1.35));
+      progressState = repetitions >= 5 && intervalDays >= 21 ? "mastered" : "reviewing";
+    }
   }
 
-  easeFactor = Math.min(3.2, Math.max(1.3, easeFactor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))));
-  const nextReviewAt = new Date(now.getTime() + intervalDays * 24 * 60 * 60 * 1000).toISOString();
-  const lapses = quality < 3 ? Number(word.lapses || 0) + 1 : Number(word.lapses || 0);
-  const progressState = repetitions >= 5 && intervalDays >= 21 ? "mastered" : "learning";
+  easeFactor = clamp(easeFactor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02)), 1.3, 3.2);
+  if (leechScore >= 4) progressState = "leech";
+  return { repetitions, intervalDays, easeFactor: Number(easeFactor.toFixed(2)), learningStep, progressState, lapses, leechScore, quality };
+}
 
+export function sm2(word: any, reviewLabel: string, now = new Date()) {
+  const previousInterval = Number(word.interval_days || 0);
+  const prompt = buildReviewPrompt(word);
+  const schedule = scheduleInterval(word, reviewLabel);
+  const nextReviewAt = new Date(now.getTime() + schedule.intervalDays * 24 * 60 * 60 * 1000).toISOString();
   return {
     updatedWord: {
       ...word,
-      repetitions,
-      interval_days: intervalDays,
+      repetitions: schedule.repetitions,
+      interval_days: schedule.intervalDays,
       previous_interval_days: previousInterval,
-      ease_factor: Number(easeFactor.toFixed(2)),
-      last_quality: quality,
+      ease_factor: schedule.easeFactor,
+      learning_step: schedule.learningStep,
+      last_quality: schedule.quality,
       last_rating: reviewLabel,
+      last_prompt_type: prompt.type,
       last_reviewed_at: nowIso(now),
       next_review_at: nextReviewAt,
       review_count: Number(word.review_count || 0) + 1,
-      lapses,
-      progress_state: progressState,
+      lapses: schedule.lapses,
+      leech_score: schedule.leechScore,
+      progress_state: schedule.progressState,
       updated_at: nowIso(now),
     },
     event: {
@@ -277,13 +239,15 @@ export function sm2(word: any, reviewLabel: string, now = new Date()) {
       word_id: word.id,
       term: word.term,
       rating: reviewLabel,
-      quality,
+      quality: schedule.quality,
+      prompt_type: prompt.type,
       due_before: word.next_review_at || null,
       due_after: nextReviewAt,
       occurred_at: nowIso(now),
       interval_days_before: previousInterval,
-      interval_days_after: intervalDays,
-      ease_factor_after: Number(easeFactor.toFixed(2)),
+      interval_days_after: schedule.intervalDays,
+      ease_factor_after: schedule.easeFactor,
+      progress_state_after: schedule.progressState,
     },
   };
 }

@@ -1,6 +1,7 @@
 data/
 node_modules/
 output/
+dist/
 test-results/
 public/design-previews/
 .convex/
